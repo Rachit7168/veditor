@@ -1,3 +1,6 @@
+from datetime import UTC, datetime, timedelta
+from unittest.mock import MagicMock
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import sessionmaker
@@ -6,6 +9,7 @@ from app import models
 from app.db import Base, engine, get_db
 from app.main import app
 from app.security import create_session_token, hash_password
+from app.storage import get_storage_backend
 
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False)
 
@@ -74,16 +78,21 @@ def authenticate_client(client: TestClient, user: models.User):
 def test_get_events_unauthenticated(client: TestClient):
     response = client.get("/studio/events", follow_redirects=False)
     assert response.status_code == 302
-    assert response.headers["location"] == "/login"
+    assert response.headers["location"] == "/login?next=/studio/events"
 
 
 def test_get_events_forbidden_for_user_role(client: TestClient, db_session):
     user = create_user(db_session, "viewer@test.com", "user")
     authenticate_client(client, user)
 
-    response = client.get("/studio/events")
-    assert response.status_code == 403
-    assert response.json()["detail"] == "Operation requires minimum role 'organizer'"
+    response = client.get("/studio/events", follow_redirects=False)
+    assert response.status_code == 302
+    assert response.headers["location"] == "/studio"
+
+    followed = client.get("/studio/events", follow_redirects=True)
+    assert followed.status_code == 200
+    assert "You do not have the permission to access that page" in followed.text
+    assert "alert alert-danger" in followed.text
 
 
 def test_get_events_organizer_empty(client: TestClient, db_session):
@@ -179,6 +188,7 @@ def test_post_events_success_organizer(client: TestClient, db_session):
     event = (
         db_session.query(models.Event)
         .filter(models.Event.name == "FOSSASIA Summit 2026 Organizer Post")
+        .order_by(models.Event.id.desc())
         .first()
     )
     assert event is not None
@@ -379,11 +389,6 @@ def test_post_events_delete_success_and_permissions(client: TestClient, db_sessi
 def test_delete_studio_event_teardown_and_failure_resilience(
     client: TestClient, db_session
 ):
-    from datetime import UTC, datetime, timedelta
-    from unittest.mock import MagicMock
-
-    from app.storage import get_storage_backend
-
     org = create_user(db_session, "teardown_org@test.com", "organizer")
     event = models.Event(name="Teardown Event", created_by_user_id=org.id)
     db_session.add(event)
@@ -472,11 +477,6 @@ def test_delete_studio_event_teardown_and_failure_resilience(
 def test_delete_studio_event_multi_talk_failure_resilience_and_retry(
     client: TestClient, db_session
 ):
-    from datetime import UTC, datetime, timedelta
-    from unittest.mock import MagicMock
-
-    from app.storage import get_storage_backend
-
     org = create_user(db_session, "multi_teardown_org@test.com", "organizer")
     event = models.Event(name="Multi Teardown Event", created_by_user_id=org.id)
     db_session.add(event)
@@ -598,8 +598,6 @@ def test_delete_studio_event_multi_talk_failure_resilience_and_retry(
 
 
 def test_dashboard_talks_scoped_to_organizers_events(client: TestClient, db_session):
-    from datetime import UTC, datetime, timedelta
-
     org1 = create_user(db_session, "scope_org1@test.com", "organizer")
     org2 = create_user(db_session, "scope_org2@test.com", "organizer")
     admin = create_user(db_session, "scope_admin@test.com", "admin")
